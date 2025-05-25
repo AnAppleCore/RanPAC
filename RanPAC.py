@@ -252,6 +252,8 @@ class Learner(BaseLearner):
             self._network.fc.weight = nn.Parameter(torch.Tensor(self._network.fc.out_features, M).to(device='cuda')) #num classes in task x M
             self._network.fc.reset_parameters()
             self._network.fc.W_rand=torch.randn(self._network.fc.in_features,M).to(device='cuda')
+            # sparsity = 0.01
+            # self._network.fc.W_rand=torch.bernoulli(torch.full((self._network.fc.in_features, M), sparsity)).float().to(device='cuda')
             self.W_rand=copy.deepcopy(self._network.fc.W_rand) #make a copy that gets passed each time the head is replaced
         else:
             #no RP, only decorrelation
