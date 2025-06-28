@@ -10,7 +10,7 @@ from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from inc_net import ResNetCosineIncrementalNet,SimpleVitNet
+from inc_net import ResNetCosineIncrementalNet,MoEViTNet
 from utils.toolkit import target2onehot, tensor2numpy, accuracy
 
 num_workers = 8
@@ -25,6 +25,7 @@ class BaseLearner(object):
 
         self._device = args["device"][0]
         self._multiple_gpus = args["device"]
+
     def eval_task(self):
         y_pred, y_true = self._eval_cnn(self.test_loader)
         acc_total,grouped = self._evaluate(y_pred, y_true)
@@ -63,6 +64,7 @@ class BaseLearner(object):
 class Learner(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
+
         if args["model_name"]!='ncm':
             if args["model_name"]=='adapter' and '_adapter' not in args["convnet_type"]:
                 raise NotImplementedError('Adapter requires Adapter backbone')
@@ -75,13 +77,13 @@ class Learner(BaseLearner):
                 self._network = ResNetCosineIncrementalNet(args, True)
                 self._batch_size=128
             else:
-                self._network = SimpleVitNet(args, True)
+                self._network = MoEViTNet(args, True, num_views=args['num_views'])
                 self._batch_size= args["batch_size"]
             
             self.weight_decay=args["weight_decay"] if args["weight_decay"] is not None else 0.0005
             self.min_lr=args['min_lr'] if args['min_lr'] is not None else 1e-8
         else:
-            self._network = SimpleVitNet(args, True)
+            self._network = MoEViTNet(args, True, num_views=args['num_views'])
             self._batch_size= args["batch_size"]
         self.args=args
 
@@ -91,13 +93,13 @@ class Learner(BaseLearner):
     def replace_fc(self,trainloader):
         self._network = self._network.eval()
 
-        if self.args['use_RP']:
-            #these lines are needed because the CosineLinear head gets deleted between streams and replaced by one with more classes (for CIL)
-            self._network.fc.use_RP=True
-            if self.args['M']>0:
-                self._network.fc.W_rand=self.W_rand
-            else:
-                self._network.fc.W_rand=None
+        for i in range(self.args['num_views']):
+            if self.args['use_RP']:
+                self._network.fc[i].use_RP=True
+                if self.args['M']>0:
+                    self._network.fc[i].W_rand=self.W_rand[i]
+                else:
+                    self._network.fc[i].W_rand=None
 
         Features_f = []
         label_list = []
@@ -113,27 +115,28 @@ class Learner(BaseLearner):
         label_list = torch.cat(label_list, dim=0)
         
         Y=target2onehot(label_list,self.total_classnum)
-        if self.args['use_RP']:
-            #print('Number of pre-trained feature dimensions = ',Features_f.shape[-1])
-            if self.args['M']>0:
-                Features_h=torch.nn.functional.relu(Features_f@ self._network.fc.W_rand.cpu())
-            else:
-                Features_h=Features_f
-            self.Q=self.Q+Features_h.T @ Y 
-            self.G=self.G+Features_h.T @ Features_h
-            ridge=self.optimise_ridge_parameter(Features_h,Y)
-            Wo=torch.linalg.solve(self.G+ridge*torch.eye(self.G.size(dim=0)),self.Q).T #better nmerical stability than .inv
-            self._network.fc.weight.data=Wo[0:self._network.fc.weight.shape[0],:].to(device='cuda')
-        else:
-            for class_index in np.unique(self.train_dataset.labels):
-                data_index=(label_list==class_index).nonzero().squeeze(-1)
-                if self.is_dil:
-                    class_prototype=Features_f[data_index].sum(0)
-                    self._network.fc.weight.data[class_index]+=class_prototype.to(device='cuda') #for dil, we update all classes in all tasks
+
+        for i in range(self.args['num_views']):
+            if self.args['use_RP']:
+                if self.args['M']>0:
+                    Features_h=torch.nn.functional.relu(Features_f@ self._network.fc[i].W_rand.cpu())
                 else:
-                    #original cosine similarity approach of Zhou et al (2023)
-                    class_prototype=Features_f[data_index].mean(0)
-                    self._network.fc.weight.data[class_index]=class_prototype #for cil, only new classes get updated
+                    Features_h=Features_f
+                self.Q[i]=self.Q[i]+Features_h.T @ Y 
+                self.G[i]=self.G[i]+Features_h.T @ Features_h
+                ridge=self.optimise_ridge_parameter(Features_h,Y)
+                Wo=torch.linalg.solve(self.G[i]+ridge*torch.eye(self.G[i].size(dim=0)),self.Q[i]).T #better nmerical stability than .inv
+                self._network.fc[i].weight.data=Wo[0:self._network.fc[i].weight.shape[0],:].to(device='cuda')
+            else:
+                for class_index in np.unique(self.train_dataset.labels):
+                    data_index=(label_list==class_index).nonzero().squeeze(-1)
+                    if self.is_dil:
+                        class_prototype=Features_f[data_index].sum(0)
+                        self._network.fc[i].weight.data[class_index]+=class_prototype.to(device='cuda') #for dil, we update all classes in all tasks
+                    else:
+                        #original cosine similarity approach of Zhou et al (2023)
+                        class_prototype=Features_f[data_index].mean(0)
+                        self._network.fc[i].weight.data[class_index]=class_prototype #for cil, only new classes get updated
 
     def optimise_ridge_parameter(self,Features,Y):
         ridges=10.0**np.arange(-8,9)
@@ -156,7 +159,7 @@ class Learner(BaseLearner):
         if self.args['use_RP']:
             #temporarily remove RP weights
             del self._network.fc
-            self._network.fc=None
+            self._network.fc=nn.ModuleList([None] * self.args['num_views']).cuda()
         self._network.update_fc(self._classes_seen_so_far) #creates a new head with a new number of classes (if CIL)
         if self.is_dil == False:
             logging.info("Starting CIL Task {}".format(self._cur_task+1))
@@ -241,28 +244,31 @@ class Learner(BaseLearner):
                 self._network.fc.weight.data.fill_(0.0)
             self.replace_fc(train_loader_for_CPs)
             self.show_num_params()
-        
     
     def setup_RP(self):
         self.initiated_G=False
-        self._network.fc.use_RP=True
-        if self.args['M']>0:
-            #RP with M > 0
-            M=self.args['M']
-            self._network.fc.weight = nn.Parameter(torch.Tensor(self._network.fc.out_features, M).to(device='cuda')) #num classes in task x M
-            self._network.fc.reset_parameters()
-            if self.args.get('sparsity', 1) != 1:
-                self._network.fc.W_rand=torch.bernoulli(
-                    torch.full((self._network.fc.in_features, M), self.args['sparsity'])
-                    ).float().to(device='cuda')
+        self.W_rand=[]
+        self.Q=[]
+        self.G=[]
+        for i in range(self.args['num_views']):
+            self._network.fc[i].use_RP=True
+            if self.args['M']>0:
+                #RP with M > 0
+                M=self.args['M']
+                self._network.fc[i].weight = nn.Parameter(torch.Tensor(self._network.fc[i].out_features, M).to(device='cuda')) #num classes in task x M
+                self._network.fc[i].reset_parameters()
+                if self.args.get('sparsity', 1) != 1:
+                    self._network.fc[i].W_rand=torch.bernoulli(
+                        torch.full((self._network.fc[i].in_features, M), self.args['sparsity'])
+                        ).float().to(device='cuda')
+                else:
+                    self._network.fc[i].W_rand=torch.randn(self._network.fc[i].in_features,M).to(device='cuda')
+                self.W_rand.append(copy.deepcopy(self._network.fc[i].W_rand)) #make a copy that gets passed each time the head is replaced
             else:
-                self._network.fc.W_rand=torch.randn(self._network.fc.in_features,M).to(device='cuda')
-            self.W_rand=copy.deepcopy(self._network.fc.W_rand) #make a copy that gets passed each time the head is replaced
-        else:
-            #no RP, only decorrelation
-            M=self._network.fc.in_features #this M is L in the paper
-        self.Q=torch.zeros(M,self.total_classnum)
-        self.G=torch.zeros(M,M)
+                #no RP, only decorrelation
+                M=self._network.fc[i].in_features #this M is L in the paper
+            self.Q.append(torch.zeros(M,self.total_classnum))
+            self.G.append(torch.zeros(M,M))
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.args['tuned_epoch']))
@@ -272,7 +278,7 @@ class Learner(BaseLearner):
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                logits = self._network(inputs)["logits"]
+                logits = self._network(inputs, is_train=True)["logits"]
                 loss = F.cross_entropy(logits, targets)
                 optimizer.zero_grad()
                 loss.backward()

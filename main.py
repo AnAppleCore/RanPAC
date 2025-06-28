@@ -7,7 +7,7 @@ def main():
     parser.add_argument('-i', type=int)
     parser.add_argument('-d', type=str)
     a=parser.parse_args()
-    exps=pd.read_csv('./args/'+a.d+'_publish.csv')
+    exps=pd.read_csv('./args/'+a.d+'_develop.csv')
     args=exps[exps['ID']==a.i].to_dict('records')[0]
     args['seed']=[args['seed']]
     args['device']=[args['device']]

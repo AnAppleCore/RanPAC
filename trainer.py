@@ -9,6 +9,7 @@ import torch
 from utils.data_manager import DataManager
 from utils.toolkit import count_parameters
 from RanPAC import Learner
+from MoE_RanPAC import Learner as MoELearner
 
 def train(args):
     seed_list = copy.deepcopy(args["seed"])
@@ -25,15 +26,15 @@ def train(args):
 def _train(args):
 
     init_cls = 0 if args ["init_cls"] == args["increment"] else args["init_cls"]
-    logs_name = "logs/{}/{}/{}/{}".format(args["model_name"],args["dataset"], init_cls, args['increment'])
+    logs_name = "logs/{}/{}/{}/{}/{}".format(args["model_name"],args["dataset"], init_cls, args['increment'], args['exp_name'])
     if not os.path.exists(logs_name):
         os.makedirs(logs_name)
-    logfilename = "logs/{}/{}/{}/{}/{}_{}_{}".format(
+    logfilename = "logs/{}/{}/{}/{}/{}/{}_{}".format(
         args["model_name"],
         args["dataset"],
         init_cls,
         args["increment"],
-        ' ',
+        args["exp_name"],
         args["seed"],
         args["convnet_type"],
     )
@@ -51,7 +52,10 @@ def _train(args):
     _set_device(args)
     print_args(args)
 
-    model = Learner(args)
+    if args.get("num_views", 1) > 1:
+        model = MoELearner(args)
+    else:
+        model = Learner(args)
     model.dil_init=False
     if args['dataset']=='core50':
         ds='core50_s1'

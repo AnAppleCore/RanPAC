@@ -1,0 +1,16 @@
+ID,dataset,shuffle,init_cls,increment,model_name,convnet_type,device,seed,batch_size,tuned_epoch,body_lr,head_lr,weight_decay,min_lr,use_RP,M,use_input_norm,exp_name,num_views,sparsity
+0,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1993,48,20,0.01,0.01,0.0005,0.0,True,10000,False,default,1
+1,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1994,48,20,0.01,0.01,0.0005,0.0,True,10000,False,default,1
+2,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1995,48,20,0.01,0.01,0.0005,0.0,True,10000,False,default,1
+3,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1993,48,20,0.01,0.01,0.0005,0.0,True,2000,False,mean_2000_5,5
+4,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1994,48,20,0.01,0.01,0.0005,0.0,True,2000,False,mean_2000_5,5
+5,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1995,48,20,0.01,0.01,0.0005,0.0,True,2000,False,mean_2000_5,5
+6,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1993,48,20,0.01,0.01,0.0005,0.0,True,10000,False,mean_10000_5,5
+7,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1994,48,20,0.01,0.01,0.0005,0.0,True,10000,False,mean_10000_5,5
+8,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1995,48,20,0.01,0.01,0.0005,0.0,True,10000,False,mean_10000_5,5
+9,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1993,48,20,0.01,0.01,0.0005,0.0,True,2000,False,2000_1,1
+10,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1994,48,20,0.01,0.01,0.0005,0.0,True,2000,False,2000_1,1
+11,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1995,48,20,0.01,0.01,0.0005,0.0,True,2000,False,2000_1,1
+12,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1993,48,20,0.01,0.01,0.0005,0.0,True,768,False,768_1,1
+13,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1994,48,20,0.01,0.01,0.0005,0.0,True,768,False,768_1,1
+14,cifar224,True,10,10,adapter,pretrained_vit_b16_224_in21k_adapter,0,1995,48,20,0.01,0.01,0.0005,0.0,True,768,False,768_1,1

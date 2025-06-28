@@ -7,12 +7,10 @@ import timm
 from torch.nn import functional as F
 
 class CosineLinear(nn.Module):
-    def __init__(self, in_features, out_features, nb_proxy=1, to_reduce=False, sigma=True):
+    def __init__(self, in_features, out_features, sigma=True):
         super(CosineLinear, self).__init__()
         self.in_features = in_features
-        self.out_features = out_features * nb_proxy
-        self.nb_proxy = nb_proxy
-        self.to_reduce = to_reduce
+        self.out_features = out_features
         self.weight = nn.Parameter(torch.Tensor(self.out_features, in_features))
         if sigma:
             self.sigma = nn.Parameter(torch.Tensor(1))
@@ -20,6 +18,7 @@ class CosineLinear(nn.Module):
             self.register_parameter('sigma', None)
         self.reset_parameters()
         self.use_RP=False
+        self.W_rand=None
 
     def reset_parameters(self):
         stdv = 1. / math.sqrt(self.weight.size(1))
@@ -35,12 +34,7 @@ class CosineLinear(nn.Module):
                 inn = torch.nn.functional.relu(input @ self.W_rand)
             else:
                 inn=input
-                #inn=torch.bmm(input[:,0:100].unsqueeze(-1), input[:,0:100].unsqueeze(-2)).flatten(start_dim=1) #interaction terms instead of RP
             out = F.linear(inn,self.weight)
-
-        if self.to_reduce:
-            # Reduce_proxy
-            out = reduce_proxies(out, self.nb_proxy)
 
         if self.sigma is not None:
             out = self.sigma * out
@@ -208,4 +202,39 @@ class SimpleVitNet(BaseNet):
     def forward(self, x):
         x = self.convnet(x)
         out = self.fc(x)
+        return out
+
+class MoEViTNet(BaseNet):
+    """
+    MoE-ViT: naive mean integration of multiple views
+    """
+    def __init__(self, args, pretrained, num_views=5):
+        super().__init__(args, pretrained)
+
+        self.num_views = num_views
+        self.fc = nn.ModuleList([None] * num_views)
+
+    def update_fc(self, nb_classes):
+
+        for i in range(self.num_views):
+            fc = CosineLinear(self.feature_dim, nb_classes).cuda()
+            if self.fc[i] is not None:
+                nb_output = self.fc[i].out_features
+                weight = copy.deepcopy(self.fc[i].weight.data)
+                fc.sigma.data = self.fc[i].sigma.data
+                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self.feature_dim).cuda()])
+                fc.weight = nn.Parameter(weight)
+            self.fc[i] = fc
+
+    def forward(self, x, is_train=False):
+        x = self.convnet(x)
+
+        if is_train:
+            out = self.fc[0](x)
+        else:
+            out = []
+            for i in range(self.num_views):
+                out.append(self.fc[i](x)["logits"])
+            out = torch.stack(out, dim=1)
+            out = {"logits": out.mean(dim=1)}
         return out
