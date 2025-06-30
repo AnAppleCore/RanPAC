@@ -11,55 +11,10 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from inc_net import ResNetCosineIncrementalNet,MoEViTNet
+from RanPAC import BaseLearner
 from utils.toolkit import target2onehot, tensor2numpy, accuracy
 
 num_workers = 8
-
-class BaseLearner(object):
-    def __init__(self, args):
-        self._cur_task = -1
-        self._known_classes = 0
-        self._classes_seen_so_far = 0
-        self.class_increments=[]
-        self._network = None
-
-        self._device = args["device"][0]
-        self._multiple_gpus = args["device"]
-
-    def eval_task(self):
-        y_pred, y_true = self._eval_cnn(self.test_loader)
-        acc_total,grouped = self._evaluate(y_pred, y_true)
-        return acc_total,grouped,y_pred[:,0],y_true
-
-    def _eval_cnn(self, loader):
-        self._network.eval()
-        y_pred, y_true = [], []
-        for _, (_, inputs, targets) in enumerate(loader):
-            inputs = inputs.to(self._device)
-            with torch.no_grad():
-                outputs = self._network(inputs)["logits"]
-            predicts = torch.topk(outputs, k=1, dim=1, largest=True, sorted=True)[1] 
-            y_pred.append(predicts.cpu().numpy())
-            y_true.append(targets.cpu().numpy())
-        return np.concatenate(y_pred), np.concatenate(y_true)  
-    
-    def _evaluate(self, y_pred, y_true):
-        ret = {}
-        acc_total,grouped = accuracy(y_pred.T[0], y_true, self._known_classes,self.class_increments)
-        return acc_total,grouped 
-    
-    def _compute_accuracy(self, model, loader):
-        model.eval()
-        correct, total = 0, 0
-        for i, (_, inputs, targets) in enumerate(loader):
-            inputs = inputs.to(self._device)
-            with torch.no_grad():
-                outputs = model(inputs)["logits"]
-            predicts = torch.max(outputs, dim=1)[1]
-            correct += (predicts.cpu() == targets).sum()
-            total += len(targets)
-
-        return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
 
 class Learner(BaseLearner):
     def __init__(self, args):
@@ -258,9 +213,25 @@ class Learner(BaseLearner):
                 self._network.fc[i].weight = nn.Parameter(torch.Tensor(self._network.fc[i].out_features, M).to(device='cuda')) #num classes in task x M
                 self._network.fc[i].reset_parameters()
                 if self.args.get('sparsity', 1) != 1:
-                    self._network.fc[i].W_rand=torch.bernoulli(
-                        torch.full((self._network.fc[i].in_features, M), self.args['sparsity'])
-                        ).float().to(device='cuda')
+                    # bernoulli sparsity
+                    # self._network.fc[i].W_rand=torch.bernoulli(
+                    #     torch.full((self._network.fc[i].in_features, M), self.args['sparsity'])
+                    #     ).float().to(device='cuda')
+                    # column-wise sparsity
+                    num_active = int(self._network.fc[i].in_features * self.args['sparsity'])
+                    W_rand = torch.randn(self._network.fc[i].in_features, M).to(device='cuda')
+
+                    _, top_indices = torch.topk(W_rand, k=num_active, dim=0)
+                    mask = torch.zeros_like(W_rand, dtype=torch.bool)
+                    mask.scatter_(0, top_indices, True)
+                    W_rand = W_rand * mask
+                    self._network.fc[i].W_rand = W_rand.to(device='cuda')
+                elif self.args.get('rp_bottleneck', 0) != 0:
+                    # low rank RP
+                    bottleneck_size = int(self.args['rp_bottleneck'])
+                    W_rand_pre = torch.randn(self._network.fc[i].in_features, bottleneck_size)
+                    W_rand_post = torch.randn(bottleneck_size, M)
+                    self._network.fc[i].W_rand = (W_rand_pre @ W_rand_post).to(device='cuda')
                 else:
                     self._network.fc[i].W_rand=torch.randn(self._network.fc[i].in_features,M).to(device='cuda')
                 self.W_rand.append(copy.deepcopy(self._network.fc[i].W_rand)) #make a copy that gets passed each time the head is replaced

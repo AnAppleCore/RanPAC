@@ -252,9 +252,25 @@ class Learner(BaseLearner):
             self._network.fc.weight = nn.Parameter(torch.Tensor(self._network.fc.out_features, M).to(device='cuda')) #num classes in task x M
             self._network.fc.reset_parameters()
             if self.args.get('sparsity', 1) != 1:
-                self._network.fc.W_rand=torch.bernoulli(
-                    torch.full((self._network.fc.in_features, M), self.args['sparsity'])
-                    ).float().to(device='cuda')
+                # bernoulli sparsity
+                # self._network.fc.W_rand=torch.bernoulli(
+                #     torch.full((self._network.fc.in_features, M), self.args['sparsity'])
+                #     ).float().to(device='cuda')
+                # column-wise sparsity
+                num_active = int(self._network.fc.in_features * self.args['sparsity'])
+                W_rand = torch.randn(self._network.fc.in_features, M).to(device='cuda')
+
+                _, top_indices = torch.topk(W_rand, k=num_active, dim=0)
+                mask = torch.zeros_like(W_rand, dtype=torch.bool)
+                mask.scatter_(0, top_indices, True)
+                W_rand = W_rand * mask
+                self._network.fc.W_rand = W_rand.to(device='cuda')
+            elif self.args.get('rp_bottleneck', 0) != 0:
+                # low rank RP
+                bottleneck_size = int(self.args['rp_bottleneck'])
+                W_rand_pre = torch.randn(self._network.fc.in_features, bottleneck_size)
+                W_rand_post = torch.randn(bottleneck_size, M)
+                self._network.fc.W_rand = (W_rand_pre @ W_rand_post).to(device='cuda')
             else:
                 self._network.fc.W_rand=torch.randn(self._network.fc.in_features,M).to(device='cuda')
             self.W_rand=copy.deepcopy(self._network.fc.W_rand) #make a copy that gets passed each time the head is replaced
