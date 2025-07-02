@@ -204,6 +204,131 @@ class SimpleVitNet(BaseNet):
         out = self.fc(x)
         return out
 
+class ExpertMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim=512, output_dim=None):
+        super(ExpertMLP, self).__init__()
+        if output_dim is None:
+            output_dim = input_dim
+
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        x = self.activation(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+class MoEBlock(nn.Module):
+    def __init__(self, num_experts=8, M=10000, top_k=2):
+        super(MoEBlock, self).__init__()
+        self.num_experts = num_experts
+        self.M = M
+        self.top_k = top_k
+
+        self.experts = nn.ModuleList([
+            ExpertMLP(M, hidden_dim=512, output_dim=M) 
+            for _ in range(num_experts)
+        ])
+
+        self.router = nn.Linear(M, num_experts, bias=False)
+
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def get_routing_weights(self, features):
+        routing_logits = self.router(features) # [B, num_experts]
+        topk_logits, topk_indices = torch.topk(routing_logits, self.top_k, dim=-1)
+        routing_weights = torch.zeros_like(routing_logits).to(features.device)
+        routing_weights.scatter_(-1, topk_indices, F.softmax(topk_logits, dim=-1))
+        return routing_weights, topk_indices
+    
+    def forward(self, x, return_routing_info=False):
+        routing_weights, expert_indices = self.get_routing_weights(x)
+
+        expert_outputs = []
+        for i in range(self.num_experts):
+            expert_output = self.experts[i](x)  # [B, M]
+            expert_outputs.append(expert_output)
+
+        expert_outputs = torch.stack(expert_outputs, dim=1)  # [B, num_experts, M]
+
+        combined_output = torch.sum(
+            routing_weights.unsqueeze(-1) * expert_outputs, dim=1
+        )  # [B, M]
+
+        # add residual connection
+        # combined_output = combined_output + x
+
+        result = {'moe_output': combined_output}
+
+        if return_routing_info:
+            result.update({
+                'routing_weights': routing_weights,
+                'expert_indices': expert_indices
+            })
+        return result
+    
+class MoEHead(nn.Module):
+    def __init__(self, in_features, out_features, num_experts=8, M=10000, top_k=2, sigma=True):
+        super(MoEHead, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.num_experts = num_experts
+
+        if num_experts > 0:
+            self.moe_block = MoEBlock(num_experts, M, top_k)
+        else:
+            self.register_parameter('moe_block', None)
+
+        self.weight = nn.Parameter(torch.Tensor(self.out_features, in_features))
+        if sigma:
+            self.sigma = nn.Parameter(torch.Tensor(1))
+        else:
+            self.register_parameter('sigma', None)
+        self.reset_parameters()
+
+        self.use_RP=False
+        self.W_rand=None
+
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.sigma is not None:
+            self.sigma.data.fill_(1)
+
+    def forward(self, input, only_pre_logits=False, return_routing_info=False):
+
+        result_dict = {}
+
+        if not self.use_RP:
+            result_dict.update({'moe_output': input})
+            if only_pre_logits:
+                out = input
+            else:
+                out = F.linear(F.normalize(input, p=2, dim=1), F.normalize(self.weight, p=2, dim=1))
+        else:
+            if self.W_rand is not None:
+                inn = torch.nn.functional.relu(input @ self.W_rand)
+            else:
+                inn = input
+            if self.moe_block is not None:
+                result_dict.update(self.moe_block(inn, return_routing_info=return_routing_info))
+                inn = result_dict['moe_output']
+            else:
+                result_dict.update({'moe_output': inn})
+            if only_pre_logits:
+                out = inn
+            else:
+                out = F.linear(inn, self.weight)
+
+        if self.sigma is not None:
+            out = self.sigma * out
+
+        result_dict.update({'logits': out})
+
+        return result_dict
+
 class MoEViTNet(BaseNet):
     """
     MoE-ViT: naive mean integration of multiple views
