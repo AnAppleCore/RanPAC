@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from inc_net import ResNetCosineIncrementalNet,SimpleVitNet
-from utils.toolkit import target2onehot, tensor2numpy, accuracy
+from utils.toolkit import target2onehot, create_task_aware_labels, tensor2numpy, accuracy
 
 num_workers = 8
 
@@ -27,21 +27,45 @@ class BaseLearner(object):
         self._multiple_gpus = args["device"]
 
     def eval_task(self):
-        y_pred, y_true = self._eval_cnn(self.test_loader)
+        y_pred, y_true, task_pred, task_true = self._eval_cnn(self.test_loader)
         acc_total,grouped = self._evaluate(y_pred, y_true)
-        return acc_total,grouped,y_pred[:,0],y_true
+        task_acc = np.around(
+            (task_pred == task_true).sum() * 100 / len(task_true), decimals=2
+        ) if len(task_true) > 0 else 0
+        per_task_acc = {}
+        per_task_recall = {}
+        for task_id in np.unique(task_true):
+            pred_task_ids = task_pred[task_true == task_id]
+            true_task_ids = task_true[task_true == task_id]
+            per_task_acc[task_id] = np.around(
+                (pred_task_ids == true_task_ids).sum() * 100 / len(true_task_ids), decimals=2
+            )
+
+            pred_task_ids = task_pred[task_pred == task_id]
+            true_task_ids = task_true[task_pred == task_id]
+            per_task_recall[task_id] = np.around(
+                (pred_task_ids == true_task_ids).sum() * 100 / len(true_task_ids), decimals=2
+            )
+
+        return acc_total,grouped,y_pred[:,0],y_true,task_acc,per_task_acc,per_task_recall
 
     def _eval_cnn(self, loader):
         self._network.eval()
         y_pred, y_true = [], []
+        task_pred, task_true = [], []
         for _, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
+            targets = targets.to(self._device)
             with torch.no_grad():
-                outputs = self._network(inputs)["logits"]
-            predicts = torch.topk(outputs, k=1, dim=1, largest=True, sorted=True)[1] 
+                outputs = self._network(inputs, targets)
+            predicts = torch.topk(outputs["logits"], k=1, dim=1, largest=True, sorted=True)[1]
             y_pred.append(predicts.cpu().numpy())
             y_true.append(targets.cpu().numpy())
-        return np.concatenate(y_pred), np.concatenate(y_true)  
+
+            task_pred.append(outputs['pred_task_ids'].cpu().numpy())
+            task_true.append(outputs['real_task_ids'].cpu().numpy())
+
+        return np.concatenate(y_pred), np.concatenate(y_true), np.concatenate(task_pred), np.concatenate(task_true)  
     
     def _evaluate(self, y_pred, y_true):
         ret = {}
@@ -95,6 +119,7 @@ class Learner(BaseLearner):
             del self._network.fc
             self._network.fc=None
         self._network.update_fc(self._classes_seen_so_far) #creates a new head with a new number of classes (if CIL)
+        self._network.update_map(self._cur_task, np.arange(self._known_classes, self._classes_seen_so_far))
         if self.is_dil == False:
             logging.info("Starting CIL Task {}".format(self._cur_task+1))
         logging.info("Learning on classes {}-{}".format(self._known_classes, self._classes_seen_so_far-1))
@@ -284,11 +309,19 @@ class Learner(BaseLearner):
                 Features_h=torch.nn.functional.relu(Features_f@ self._network.fc.W_rand.cpu())
             else:
                 Features_h=Features_f
-            self.Q=self.Q+Features_h.T @ Y 
-            self.G=self.G+Features_h.T @ Features_h
+            cur_Q = Features_h.T @ Y
+            cur_G = Features_h.T @ Features_h
+            self.Q=self.Q+cur_Q
+            self.G=self.G+cur_G
             ridge=self.optimise_ridge_parameter(Features_h,Y)
             Wo=torch.linalg.solve(self.G+ridge*torch.eye(self.G.size(dim=0)),self.Q).T #better nmerical stability than .inv
             self._network.fc.weight.data=Wo[0:self._network.fc.weight.shape[0],:].to(device='cuda')
+
+            if self.args.get('use_task_wise_fc', False):
+                cur_Wo = torch.linalg.solve(cur_G+ridge*torch.eye(cur_G.size(dim=0)),cur_Q).T
+                self._network.init_task_wise_fc(self._cur_task, self.W_rand)
+                self._network.task_wise_fc[self._cur_task].weight.data = \
+                    cur_Wo[0:self._network.task_wise_fc[self._cur_task].weight.shape[0],:].to(device='cuda')
         else:
             for class_index in np.unique(self.train_dataset.labels):
                 data_index=(label_list==class_index).nonzero().squeeze(-1)

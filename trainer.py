@@ -108,7 +108,7 @@ def _train(args):
             classes_df=pd.DataFrame()
             classes_df['init']=-1*np.ones(data_manager._test_data.shape[0])
         model.incremental_train(data_manager)
-        acc_total,acc_grouped,predicted_classes,true_classes = model.eval_task()
+        acc_total,acc_grouped,predicted_classes,true_classes,task_acc,per_task_acc,per_task_recall = model.eval_task()
         col1='pred_task_'+str(task)
         col2='true_task_'+str(task)
         if args['do_not_save']==False:
@@ -124,6 +124,9 @@ def _train(args):
         logging.info("Group Accuracies after this task: {}".format(acc_grouped))
         logging.info("Ave Acc curve: {}".format(acc_curve["ave_acc"]))
         logging.info("Top1 curve: {}".format(acc_curve["top1_total"]))
+        logging.info("Task ID Prediction Acc: {}".format(task_acc))
+        logging.info("Per-task Accuracies: {}".format(per_task_acc))
+        logging.info("Per-task Recall: {}".format(per_task_recall))
         
     logging.info('Finishing run')
     logging.info('')

@@ -14,6 +14,15 @@ def target2onehot(targets, n_classes):
     onehot.scatter_(dim=1, index=targets.long().view(-1, 1), value=1.0)
     return onehot
 
+def create_task_aware_labels(targets, n_classes, class_to_task, task_to_class, smooth=0.1):
+    onehot = target2onehot(targets, n_classes)
+    task_aware_labels = onehot * (1 - smooth)
+    for i, target in enumerate(targets):
+        task_id = class_to_task[target.item()]
+        for class_id in task_to_class[task_id]:
+            task_aware_labels[i, class_id] += smooth / len(task_to_class[task_id])
+    return task_aware_labels
+
 def accuracy(y_pred, y_true, nb_old, class_increments):
     assert len(y_pred) == len(y_true), "Data length error."
     all_acc = {}
