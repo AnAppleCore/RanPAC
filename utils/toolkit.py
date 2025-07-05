@@ -14,6 +14,11 @@ def target2onehot(targets, n_classes):
     onehot.scatter_(dim=1, index=targets.long().view(-1, 1), value=1.0)
     return onehot
 
+def target2onehot_task_id(targets, task_id, n_tasks):
+    onehot = torch.zeros(targets.shape[0], n_tasks).to(targets.device)
+    onehot[:, task_id] = 1.0
+    return onehot
+
 def create_task_aware_labels(targets, n_classes, class_to_task, task_to_class, smooth=0.1):
     onehot = target2onehot(targets, n_classes)
     task_aware_labels = onehot * (1 - smooth)

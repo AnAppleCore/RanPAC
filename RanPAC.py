@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from inc_net import ResNetCosineIncrementalNet,SimpleVitNet
-from utils.toolkit import target2onehot, create_task_aware_labels, tensor2numpy, accuracy
+from utils.toolkit import target2onehot, tensor2numpy, accuracy
 
 num_workers = 8
 
