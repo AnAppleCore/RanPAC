@@ -402,36 +402,73 @@ class MoEHead(nn.Module):
         return result_dict
 
 class MoEViTNet(BaseNet):
-    """
-    MoE-ViT: naive mean integration of multiple views
-    """
-    def __init__(self, args, pretrained, num_views=5):
+    def __init__(self, args, pretrained):
         super().__init__(args, pretrained)
 
-        self.num_views = num_views
-        self.fc = nn.ModuleList([None] * num_views)
+        self.class_to_task = {}
+        self.task_to_class = {}
+        self.task_wise_fc_ready = False
+        self.task_wise_fc = nn.ModuleList([])
 
     def update_fc(self, nb_classes):
+        fc = CosineLinear(self.feature_dim, nb_classes).cuda()
+        if self.fc is not None:
+            nb_output = self.fc.out_features
+            weight = copy.deepcopy(self.fc.weight.data)
+            fc.sigma.data = self.fc.sigma.data
+            weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self.feature_dim).cuda()])
+            fc.weight = nn.Parameter(weight)
+        del self.fc
+        self.fc = fc
 
-        for i in range(self.num_views):
-            fc = CosineLinear(self.feature_dim, nb_classes).cuda()
-            if self.fc[i] is not None:
-                nb_output = self.fc[i].out_features
-                weight = copy.deepcopy(self.fc[i].weight.data)
-                fc.sigma.data = self.fc[i].sigma.data
-                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self.feature_dim).cuda()])
-                fc.weight = nn.Parameter(weight)
-            self.fc[i] = fc
+    def init_task_wise_fc(self, task_id, W_rand: torch.Tensor):
+        fc = CosineLinear(self.fc.in_features, self.fc.out_features).cuda()
+        fc.W_rand = W_rand.to(device='cuda')
+        fc.use_RP = True
+        self.task_wise_fc.append(fc)
+        self.task_wise_fc[task_id].requires_grad = False
+        self.task_wise_fc_ready = True
 
-    def forward(self, x, is_train=False):
+    def update_map(self, task_id: int, class_ids: list[int]):
+        if task_id not in self.task_to_class:
+            self.task_to_class[task_id] = []
+        for class_id in class_ids:
+            self.class_to_task[class_id] = task_id
+            self.task_to_class[task_id].append(class_id)
+
+    def forward(self, x, targets=None):
         x = self.convnet(x)
+        out = self.fc(x)
 
-        if is_train:
-            out = self.fc[0](x)
-        else:
-            out = []
-            for i in range(self.num_views):
-                out.append(self.fc[i](x)["logits"])
-            out = torch.stack(out, dim=1)
-            out = {"logits": out.mean(dim=1)}
+        if targets is None:
+            return out
+
+        batch_size = out['logits'].shape[0]
+        new_logits = out['logits'].clone()
+        raw_class_ids = out['logits'].argmax(dim=-1)
+        real_class_ids = targets
+
+        pred_task_ids = []
+        real_task_ids = []
+
+        for i in range(batch_size):
+
+            raw_class_id = raw_class_ids[i].item()
+            real_class_id = real_class_ids[i].item()
+            pred_task_id = self.class_to_task[raw_class_id]
+            real_task_id = self.class_to_task[real_class_id]
+
+            pred_task_ids.append(pred_task_id)
+            real_task_ids.append(real_task_id)
+
+            if self.task_wise_fc_ready and not self.training:
+                new_out = self.task_wise_fc[pred_task_id](x[i])
+                new_logit = new_out['logits'].view(1, -1)
+                new_logits[i, :new_logit.shape[1]] = new_logit
+
+        out.update({'pred_task_ids': torch.tensor(pred_task_ids).cuda(),
+                    'real_task_ids': torch.tensor(real_task_ids).cuda(),
+                    'raw_logits': out['logits'],
+                    'new_logits': new_logits})
+
         return out

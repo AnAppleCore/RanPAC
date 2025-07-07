@@ -131,7 +131,7 @@ class Learner(BaseLearner):
         test_dataset = data_manager.get_dataset(np.arange(0, self._classes_seen_so_far), source="test", mode="test" )
         self.test_loader = DataLoader(test_dataset, batch_size=self._batch_size, shuffle=False, num_workers=num_workers)
         if len(self._multiple_gpus) > 1:
-            print('Multiple GPUs')
+            logging.info('Using multiple GPUs')
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
         self._train(self.train_loader, self.test_loader, self.train_loader_for_CPs)
         if len(self._multiple_gpus) > 1:
@@ -159,7 +159,7 @@ class Learner(BaseLearner):
                     self.freeze_backbone(is_first_session=True)
                 if self.args["model_name"] != 'ncm':
                     #this will be a PETL method. Here, 'body_lr' means all parameters
-                    self.show_num_params()
+                    self.show_num_params(verbose=True)
                     optimizer = optim.SGD(self._network.parameters(), momentum=0.9, lr=self.args['body_lr'],weight_decay=self.weight_decay)
                     scheduler=optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.args['tuned_epoch'], eta_min=self.min_lr)
                     #train the PETL method for the first task:
@@ -172,7 +172,7 @@ class Learner(BaseLearner):
                 self.dil_init=True
                 self._network.fc.weight.data.fill_(0.0)
             self.replace_fc(train_loader_for_CPs)
-            self.show_num_params()
+            self.show_num_params(verbose=True)
 
     def freeze_backbone(self,is_first_session=False):
         # Freeze the parameters for ViT.
@@ -202,7 +202,7 @@ class Learner(BaseLearner):
         if total_params != total_trainable_params and verbose:
             for name, param in self._network.named_parameters():
                 if param.requires_grad:
-                    print(name, param.numel())
+                    logging.info(f"{name}: {param.numel()}")
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.args['tuned_epoch']))
