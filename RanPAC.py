@@ -309,6 +309,10 @@ class Learner(BaseLearner):
                 Features_h=torch.nn.functional.relu(Features_f@ self._network.fc.W_rand.cpu())
             else:
                 Features_h=Features_f
+            
+            # Save Features_h for PCA analysis
+            # self._save_features_h(Features_h, label_list)
+            
             cur_Q = Features_h.T @ Y
             cur_G = Features_h.T @ Features_h
             self.Q=self.Q+cur_Q
@@ -323,6 +327,9 @@ class Learner(BaseLearner):
                 self._network.task_wise_fc[self._cur_task].weight.data = \
                     cur_Wo[0:self._network.task_wise_fc[self._cur_task].weight.shape[0],:].to(device='cuda')
         else:
+            # For non-RP methods, save Features_f as Features_h
+            # self._save_features_h(Features_f, label_list)
+            
             for class_index in np.unique(self.train_dataset.labels):
                 data_index=(label_list==class_index).nonzero().squeeze(-1)
                 if self.is_dil:
@@ -332,6 +339,41 @@ class Learner(BaseLearner):
                     #original cosine similarity approach of Zhou et al (2023)
                     class_prototype=Features_f[data_index].mean(0)
                     self._network.fc.weight.data[class_index]=class_prototype #for cil, only new classes get updated
+
+    def _save_features_h(self, Features_h, label_list):
+        """Save Features_h and corresponding labels for PCA analysis"""
+        try:
+            # Create log directory structure similar to trainer.py
+            init_cls = 0 if self.args["init_cls"] == self.args["increment"] else self.args["init_cls"]
+            log_dir = "logs/{}/{}/{}/{}/{}".format(
+                self.args["model_name"], 
+                self.args["dataset"], 
+                init_cls, 
+                self.args['increment'], 
+                self.args['exp_name']
+            )
+            
+            # Create features subdirectory
+            features_dir = os.path.join(log_dir, "features_h")
+            if not os.path.exists(features_dir):
+                os.makedirs(features_dir)
+            
+            # Convert to numpy arrays
+            features_h_np = Features_h.detach().cpu().numpy()
+            labels_np = label_list.detach().cpu().numpy()
+            
+            # Save features and labels for this task
+            features_filename = os.path.join(features_dir, f"task_{self._cur_task}_features_h.npy")
+            labels_filename = os.path.join(features_dir, f"task_{self._cur_task}_labels.npy")
+            
+            np.save(features_filename, features_h_np)
+            np.save(labels_filename, labels_np)
+            
+            logging.info(f"Saved Features_h for task {self._cur_task}: shape {features_h_np.shape}")
+            logging.info(f"Saved to: {features_filename}")
+            
+        except Exception as e:
+            logging.warning(f"Failed to save Features_h for task {self._cur_task}: {e}")
 
     def optimise_ridge_parameter(self,Features,Y):
         ridges=10.0**np.arange(-8,9)
