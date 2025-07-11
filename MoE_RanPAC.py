@@ -177,11 +177,6 @@ class Learner(BaseLearner):
             self._network.fc.weight = nn.Parameter(torch.Tensor(self._network.fc.out_features, M).to(device='cuda')) #num classes in task x M
             self._network.fc.reset_parameters()
             if self.args.get('sparsity', 1) != 1:
-                # bernoulli sparsity
-                # self._network.fc.W_rand=torch.bernoulli(
-                #     torch.full((self._network.fc.in_features, M), self.args['sparsity'])
-                #     ).float().to(device='cuda')
-
                 # column-wise sparsity
                 num_active = int(self._network.fc.in_features * self.args['sparsity'])
                 W_rand = torch.randn(self._network.fc.in_features, M).to(device='cuda')
@@ -189,11 +184,6 @@ class Learner(BaseLearner):
                 mask = torch.zeros_like(W_rand, dtype=torch.bool)
                 mask.scatter_(0, top_indices, True)
                 W_rand = W_rand * mask
-
-                # torch.nn.init.sparse_
-                # W_rand = torch.randn(self._network.fc.in_features, M)
-                # nn.init.sparse_(W_rand, sparsity=self.args['sparsity'], std=0.01)
-
                 self._network.fc.W_rand = W_rand.to(device='cuda')
             elif self.args.get('rp_bottleneck', 0) != 0:
                 # low rank RP
@@ -248,12 +238,6 @@ class Learner(BaseLearner):
             ridge=self.optimise_ridge_parameter(Features_h,Y)
             Wo=torch.linalg.solve(self.G+ridge*torch.eye(self.G.size(dim=0)),self.Q).T #better nmerical stability than .inv
             self._network.fc.weight.data=Wo[0:self._network.fc.weight.shape[0],:].to(device='cuda')
-
-            if self.args.get('use_task_wise_fc', False):
-                cur_Wo = torch.linalg.solve(cur_G+ridge*torch.eye(cur_G.size(dim=0)),cur_Q).T
-                self._network.init_task_wise_fc(self._cur_task, self.W_rand)
-                self._network.task_wise_fc[self._cur_task].weight.data = \
-                    cur_Wo[0:self._network.task_wise_fc[self._cur_task].weight.shape[0],:].to(device='cuda')
         else:
             for class_index in np.unique(self.train_dataset.labels):
                 data_index=(label_list==class_index).nonzero().squeeze(-1)

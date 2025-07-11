@@ -282,8 +282,7 @@ class MoEViTNet(BaseNet):
 
         self.class_to_task = {}
         self.task_to_class = {}
-        self.task_wise_fc_ready = False
-        self.task_wise_fc = nn.ModuleList([])
+
 
     def update_fc(self, nb_classes):
         fc = CosineLinear(self.feature_dim, nb_classes).cuda()
@@ -296,13 +295,6 @@ class MoEViTNet(BaseNet):
         del self.fc
         self.fc = fc
 
-    def init_task_wise_fc(self, task_id, W_rand: torch.Tensor):
-        fc = CosineLinear(self.fc.in_features, self.fc.out_features).cuda()
-        fc.W_rand = W_rand.to(device='cuda')
-        fc.use_RP = True
-        self.task_wise_fc.append(fc)
-        self.task_wise_fc[task_id].requires_grad = False
-        self.task_wise_fc_ready = True
 
     def update_map(self, task_id: int, class_ids: list[int]):
         if task_id not in self.task_to_class:
@@ -318,8 +310,8 @@ class MoEViTNet(BaseNet):
         if targets is None:
             return out
 
+    def _add_task_info(self, out, targets):
         batch_size = out['logits'].shape[0]
-        new_logits = out['logits'].clone()
         raw_class_ids = out['logits'].argmax(dim=-1)
         real_class_ids = targets
 
@@ -327,23 +319,18 @@ class MoEViTNet(BaseNet):
         real_task_ids = []
 
         for i in range(batch_size):
-
             raw_class_id = raw_class_ids[i].item()
             real_class_id = real_class_ids[i].item()
-            pred_task_id = self.class_to_task[raw_class_id]
-            real_task_id = self.class_to_task[real_class_id]
+            
+            pred_task_id = self.class_to_task.get(raw_class_id, 0)
+            real_task_id = self.class_to_task.get(real_class_id, 0)
 
             pred_task_ids.append(pred_task_id)
             real_task_ids.append(real_task_id)
 
-            if self.task_wise_fc_ready and not self.training:
-                new_out = self.task_wise_fc[pred_task_id](x[i])
-                new_logit = new_out['logits'].view(1, -1)
-                new_logits[i, :new_logit.shape[1]] = new_logit
-
-        out.update({'pred_task_ids': torch.tensor(pred_task_ids).cuda(),
-                    'real_task_ids': torch.tensor(real_task_ids).cuda(),
-                    'raw_logits': out['logits'],
-                    'new_logits': new_logits})
+        out.update({
+            'pred_task_ids': torch.tensor(pred_task_ids).cuda(),
+            'real_task_ids': torch.tensor(real_task_ids).cuda(),
+        })
 
         return out

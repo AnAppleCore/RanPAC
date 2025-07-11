@@ -52,7 +52,7 @@ def _train(args):
     _set_device(args)
     print_args(args)
 
-    if args.get("num_views", 1) > 1:
+    if args.get("num_experts", 1) > 1:
         model = MoELearner(args)
     else:
         model = Learner(args)
